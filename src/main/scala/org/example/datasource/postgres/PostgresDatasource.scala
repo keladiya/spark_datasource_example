@@ -40,13 +40,23 @@ object PostgresTable {
   val schema: StructType = new StructType().add("user_id", LongType)
 }
 
-case class ConnectionProperties(url: String, user: String, password: String, tableName: String)
+case class ConnectionProperties(
+                                 url: String
+                                 , user: String
+                                 , password: String
+                                 , tableName: String
+                                 , partitionSize: String
+                               )
 
 /** Read */
 
 class PostgresScanBuilder(options: CaseInsensitiveStringMap) extends ScanBuilder {
   override def build(): Scan = new PostgresScan(ConnectionProperties(
-    options.get("url"), options.get("user"), options.get("password"), options.get("tableName")
+    options.get("url")
+    , options.get("user")
+    , options.get("password")
+    , options.get("tableName")
+    , options.getOrDefault("partitionSize", "1")
   ))
 }
 
@@ -57,7 +67,9 @@ class PostgresScan(connectionProperties: ConnectionProperties) extends Scan with
 
   override def toBatch: Batch = this
 
-  override def planInputPartitions(): Array[InputPartition] = Array(new PostgresPartition)
+  override def planInputPartitions(): Array[InputPartition] = {
+    (0 until connectionProperties.partitionSize.toInt).map(_ => new PostgresPartition).toArray
+  }
 
   override def createReaderFactory(): PartitionReaderFactory = new PostgresPartitionReaderFactory(connectionProperties)
 }
@@ -85,7 +97,11 @@ class PostgresPartitionReader(connectionProperties: ConnectionProperties) extend
 
 class PostgresWriteBuilder(options: CaseInsensitiveStringMap) extends WriteBuilder {
   override def buildForBatch(): BatchWrite = new PostgresBatchWrite(ConnectionProperties(
-    options.get("url"), options.get("user"), options.get("password"), options.get("tableName")
+    options.get("url")
+    , options.get("user")
+    , options.get("password")
+    , options.get("tableName")
+    , options.getOrDefault("partitionSize", "1")
   ))
 }
 
