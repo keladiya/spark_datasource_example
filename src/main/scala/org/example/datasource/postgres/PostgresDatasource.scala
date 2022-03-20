@@ -8,7 +8,7 @@ import org.apache.spark.sql.connector.write.{BatchWrite, DataWriter, DataWriterF
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
-import java.sql.{DriverManager, ResultSet}
+import java.sql.{Connection, DriverManager, PreparedStatement}
 import java.util
 import scala.collection.JavaConverters._
 
@@ -40,27 +40,17 @@ object PostgresTable {
   val schema: StructType = new StructType().add("user_id", LongType)
 }
 
-case class ConnectionProperties(
-                                 url: String
-                                 , user: String
-                                 , password: String
-                                 , tableName: String
-                                 , partitionSize: String
-                               )
+case class ConnectionProperties(url: String, user: String, password: String, tableName: String, partitionSize: String)
 
 /** Read */
 
 class PostgresScanBuilder(options: CaseInsensitiveStringMap) extends ScanBuilder {
   override def build(): Scan = new PostgresScan(ConnectionProperties(
-    options.get("url")
-    , options.get("user")
-    , options.get("password")
-    , options.get("tableName")
-    , options.getOrDefault("partitionSize", "1")
+    options.get("url"), options.get("user"), options.get("password"), options.get("tableName"), options.getOrDefault("partitionSize", "1")
   ))
 }
 
-class PostgresPartition extends InputPartition
+case class PostgresPartition(start: Long) extends InputPartition
 
 class PostgresScan(connectionProperties: ConnectionProperties) extends Scan with Batch {
   override def readSchema(): StructType = PostgresTable.schema
@@ -68,23 +58,42 @@ class PostgresScan(connectionProperties: ConnectionProperties) extends Scan with
   override def toBatch: Batch = this
 
   override def planInputPartitions(): Array[InputPartition] = {
-    (0 until connectionProperties.partitionSize.toInt).map(_ => new PostgresPartition).toArray
+
+    val partSize = connectionProperties.partitionSize.toInt
+    val partNum = Math.ceil(getTableSize / partSize.toDouble).toInt
+    val partArray = new Array[InputPartition](partNum)
+    for( i <- 0 until partNum){
+      partArray(i) = PostgresPartition(partSize * i)
+    }
+    partArray
   }
 
   override def createReaderFactory(): PartitionReaderFactory = new PostgresPartitionReaderFactory(connectionProperties)
+
+  def getTableSize: Int = {
+    val connection = DriverManager.getConnection(
+      connectionProperties.url, connectionProperties.user, connectionProperties.password
+    )
+    val resultSet = connection.createStatement().executeQuery(s"select count(*) from ${connectionProperties.tableName}")
+    resultSet.next()
+    resultSet.getInt(1)
+  }
 }
 
 class PostgresPartitionReaderFactory(connectionProperties: ConnectionProperties)
   extends PartitionReaderFactory {
-  override def createReader(partition: InputPartition): PartitionReader[InternalRow] = new PostgresPartitionReader(connectionProperties)
+  override def createReader(partition: InputPartition): PartitionReader[InternalRow] =
+    new PostgresPartitionReader(connectionProperties, partition.asInstanceOf[PostgresPartition].start, connectionProperties.partitionSize.toLong)
 }
 
-class PostgresPartitionReader(connectionProperties: ConnectionProperties) extends PartitionReader[InternalRow] {
+class PostgresPartitionReader(connectionProperties: ConnectionProperties, offset: Long, limit: Long) extends PartitionReader[InternalRow] {
   private val connection = DriverManager.getConnection(
     connectionProperties.url, connectionProperties.user, connectionProperties.password
   )
-  private val statement = connection.createStatement()
-  private val resultSet = statement.executeQuery(s"select * from ${connectionProperties.tableName}")
+
+  val statement = s"select * from ${connectionProperties.tableName} limit $limit offset $offset"
+  val preparedStatement: PreparedStatement = connection.prepareStatement(statement)
+  private val resultSet = preparedStatement.executeQuery
 
   override def next(): Boolean = resultSet.next()
 
@@ -97,11 +106,7 @@ class PostgresPartitionReader(connectionProperties: ConnectionProperties) extend
 
 class PostgresWriteBuilder(options: CaseInsensitiveStringMap) extends WriteBuilder {
   override def buildForBatch(): BatchWrite = new PostgresBatchWrite(ConnectionProperties(
-    options.get("url")
-    , options.get("user")
-    , options.get("password")
-    , options.get("tableName")
-    , options.getOrDefault("partitionSize", "1")
+    options.get("url"), options.get("user"), options.get("password"), options.get("tableName"), options.getOrDefault("partitionSize", "1")
   ))
 }
 
@@ -123,13 +128,13 @@ object WriteSucceeded extends WriterCommitMessage
 
 class PostgresWriter(connectionProperties: ConnectionProperties) extends DataWriter[InternalRow] {
 
-  val connection = DriverManager.getConnection(
+  val connection: Connection = DriverManager.getConnection(
     connectionProperties.url,
     connectionProperties.user,
     connectionProperties.password
   )
   val statement = "insert into users (user_id) values (?)"
-  val preparedStatement = connection.prepareStatement(statement)
+  val preparedStatement: PreparedStatement = connection.prepareStatement(statement)
 
   override def write(record: InternalRow): Unit = {
     val value = record.getLong(0)

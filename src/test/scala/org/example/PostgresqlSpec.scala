@@ -5,14 +5,15 @@ import com.dimafeng.testcontainers.PostgreSQLContainer
 import org.apache.spark.sql.{SaveMode, SparkSession}
 import org.scalatest.flatspec.AnyFlatSpec
 
-import java.sql.DriverManager
+import java.sql.{Connection, DriverManager}
 import java.util.Properties
 
 class PostgresqlSpec extends AnyFlatSpec with TestContainerForAll {
 
-  override val containerDef = PostgreSQLContainer.Def()
+  override val containerDef: PostgreSQLContainer.Def = PostgreSQLContainer.Def()
 
   val testTableName = "users"
+  val partitionSize = "10"
 
   "PostgreSQL data source" should "read table" in withContainers { postgresServer =>
     val spark = SparkSession
@@ -28,7 +29,7 @@ class PostgresqlSpec extends AnyFlatSpec with TestContainerForAll {
       .option("user", postgresServer.username)
       .option("password", postgresServer.password)
       .option("tableName", testTableName)
-      .option("partitionSize", "10")
+      .option("partitionSize", partitionSize)
       .load()
       .show()
 
@@ -74,7 +75,7 @@ class PostgresqlSpec extends AnyFlatSpec with TestContainerForAll {
     }
   }
 
-  def connection(c: PostgreSQLContainer) = {
+  def connection(c: PostgreSQLContainer): Connection = {
     Class.forName(c.driverClassName)
     val properties = new Properties()
     properties.put("user", c.username)
